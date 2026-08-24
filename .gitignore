@@ -1,0 +1,17 @@
+# ── CONFIDENTIAL: never commit ─────────────────────────────────
+# All data-derived artifacts. Generated automatically on first run;
+# they contain terminology and statistics from the local corpus.
+out/
+out_test/
+config/glossary.json
+config/glossary_stage4.json
+config/icd10_atc_en.json
+downloads/
+data/
+*.fhir.json
+*.facts.json
+
+# runtime
+__pycache__/
+*.pyc
+.DS_Store

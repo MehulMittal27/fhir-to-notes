@@ -1,0 +1,7 @@
+{
+  "_comment": "TEMPLATE - copy to icd10_atc_en.json and fill with codes from YOUR corpus. Stage 2 reads icd10_atc_en.json (gitignored, data-derived); this template is the committed starting point. Keys: terminology system, then code -> {en, source}.",
+  "icd-10-gm": {
+    "EXAMPLE": {"en": "example English title from WHO ICD-10", "source": "WHO ICD-10 <code>"}
+  },
+  "atc": {}
+}

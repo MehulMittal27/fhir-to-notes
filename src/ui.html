@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fhir-to-notes</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e8eaef; --border2: #dfe2e9;
+    --text: #1a1d27; --dim: #7a8194; --accent: #6c5ce7; --accent-soft: #efedfd;
+    --green: #22a06b; --green-soft: #e6f6ef; --red: #e5484d; --red-soft: #feecec;
+    --amber: #d97706; --amber-soft: #fdf3e3;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); height: 100vh; display: flex;
+         font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif; overflow: hidden; }
+
+  /* ── sidebar ─────────────────────────────── */
+  aside { width: 232px; background: var(--card); border-right: 1px solid var(--border);
+          display: flex; flex-direction: column; padding: 20px 14px; flex-shrink: 0; }
+  .logo { display: flex; align-items: center; gap: 10px; padding: 4px 10px 22px; }
+  .logo-mark { width: 34px; height: 34px; border-radius: 10px;
+               background: linear-gradient(135deg, var(--accent), #a78bfa);
+               display: flex; align-items: center; justify-content: center;
+               color: #fff; font-weight: 800; font-size: 15px; }
+  .logo b { font-size: 14.5px; display: block; }
+  .logo small { color: var(--dim); font-size: 11px; }
+  .nav-label { font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+               color: var(--dim); padding: 16px 12px 7px; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+              border-radius: 9px; cursor: pointer; font-size: 13.5px; color: #3d4354;
+              margin-bottom: 2px; border: 1px solid transparent; }
+  .nav-item:hover { background: var(--bg); }
+  .nav-item.active { background: var(--accent-soft); color: var(--accent);
+                     border-color: #ded9fb; font-weight: 600; }
+  .nav-item .count { margin-left: auto; font-size: 11px; color: var(--dim); }
+  .nav-item.active .count { color: var(--accent); }
+  .side-foot { margin-top: auto; border-top: 1px solid var(--border); padding-top: 14px;
+               font-size: 11px; color: var(--dim); padding-left: 12px; line-height: 1.6; }
+
+  /* ── main ────────────────────────────────── */
+  main { flex: 1; overflow-y: auto; padding: 26px 34px 40px; }
+  .page-title { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+  .page-sub { color: var(--dim); font-size: 13.5px; margin: 6px 0 22px; max-width: 640px; line-height: 1.5; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; }
+  .card-pad { padding: 18px 20px; }
+
+  /* stat row */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+          padding: 16px 20px; }
+  .stat .label { font-size: 12.5px; color: var(--dim); display: flex; align-items: center; gap: 7px; }
+  .stat .num { font-size: 30px; font-weight: 700; letter-spacing: -.02em; margin-top: 6px; }
+  .stat .num small { font-size: 14px; font-weight: 600; color: var(--dim); }
+  .stat.green .num { color: var(--green); } .stat.red .num { color: var(--red); }
+  .stat.accent .num { color: var(--accent); }
+
+  /* controls card */
+  .controls { display: grid; grid-template-columns: minmax(0, 1fr) 230px 200px auto;
+              gap: 14px; align-items: end; margin-bottom: 18px; }
+  .ctl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ctl label { font-size: 11.5px; color: var(--dim); font-weight: 600;
+               display: flex; align-items: center; gap: 6px; }
+  .ctl .row { display: flex; align-items: center; }
+  .ctl select, .ctl input { width: 100%; min-width: 0; height: 42px;
+      padding: 0 13px; font-size: 13px; border-radius: 10px;
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237a8194' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 13px center; }
+  .ctl select { padding-right: 32px; }
+  .btn { height: 42px; }
+  .info { margin-bottom: 1px; }
+  .saved-banner { display: flex; align-items: center; gap: 10px; background: var(--green-soft);
+                  border: 1px solid #cdebd9; border-radius: 10px; padding: 10px 16px;
+                  margin-bottom: 18px; font-size: 13px; color: var(--green); font-weight: 600; }
+  .saved-banner code { color: var(--text); font-weight: 500; }
+  .saved-banner .dim { color: var(--dim); font-weight: 400; }
+  .controls input, .controls select { background: var(--card); border: 1px solid var(--border2);
+      border-radius: 10px; padding: 9px 13px; font-size: 13px; color: var(--text);
+      font-family: ui-monospace, monospace; }
+  .controls input { flex: 1; min-width: 300px; }
+  .btn { background: var(--text); color: #fff; border: none; border-radius: 10px;
+         padding: 10px 20px; font-weight: 600; font-size: 13px; cursor: pointer; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn.ghost { background: var(--card); color: var(--text); border: 1px solid var(--border2); }
+  .btn.small { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
+
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
+          padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
+          color: var(--dim); background: var(--card); }
+  .chip.pass { color: var(--green); background: var(--green-soft); border-color: transparent; }
+  .chip.fail { color: var(--red); background: var(--red-soft); border-color: transparent; }
+  .chip.pending { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+
+  /* patient cards grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .pt-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+             padding: 16px 18px; cursor: pointer; transition: box-shadow .15s, transform .15s; }
+  .pt-card:hover { box-shadow: 0 4px 18px rgba(26,29,39,.07); transform: translateY(-1px); }
+  .pt-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .pt-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .pt-head .id { font-family: ui-monospace, monospace; font-weight: 700; font-size: 13.5px; }
+  .pt-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+  .pt-foot { display: flex; justify-content: space-between; color: var(--dim); font-size: 11.5px;
+             border-top: 1px solid var(--border); padding-top: 10px; }
+
+  /* note viewer */
+  .note-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+               padding: 26px 30px; max-width: 880px; }
+  .note-text { font-family: Georgia, serif; font-size: 16.5px; line-height: 1.8; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .prov { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px;
+          font-size: 12px; color: var(--dim); line-height: 1.9; }
+  .prov code { background: var(--bg); padding: 1px 6px; border-radius: 5px; font-size: 11px; }
+  .neg-panel { margin-top: 16px; border: 1px solid #f1dfc4; background: var(--amber-soft);
+               border-radius: 10px; padding: 13px 17px; font-size: 13px; }
+  .neg-panel b { color: var(--amber); font-size: 11px; letter-spacing: .07em;
+                 text-transform: uppercase; display: block; margin-bottom: 6px; }
+  a { color: var(--accent); text-decoration: none; }
+
+  /* glossary table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 9px 12px; color: var(--dim); font-size: 11.5px;
+       text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: #fafbfc; }
+  code { background: var(--bg); padding: 1px 6px; border-radius: 5px; font-size: 11.5px;
+         font-family: ui-monospace, monospace; }
+  .approve-btn { background: var(--green-soft); color: var(--green); border: 1px solid #cdebd9;
+                 border-radius: 7px; padding: 4px 12px; font-size: 11.5px; cursor: pointer;
+                 font-weight: 600; }
+
+  pre.log { background: #14161f; color: #7ee787; border-radius: 12px; padding: 16px;
+            font-size: 11.5px; line-height: 1.55; max-height: 420px; overflow-y: auto;
+            font-family: ui-monospace, monospace; white-space: pre-wrap; }
+  .empty { color: var(--dim); text-align: center; padding: 70px 0; font-size: 13.5px; }
+  .hidden { display: none !important; }
+  .info { display: inline-flex; align-items: center; justify-content: center;
+          width: 15px; height: 15px; border-radius: 50%; background: var(--border2);
+          color: var(--dim); font-size: 10px; font-weight: 700; cursor: help;
+          position: relative; font-style: normal; flex-shrink: 0; }
+  .info:hover { background: var(--accent); color: #fff; }
+  .info .tip { visibility: hidden; opacity: 0; position: absolute; top: calc(100% + 10px);
+               left: 50%; transform: translateX(-50%); width: 300px; background: var(--card);
+               color: var(--text); border: 1px solid var(--border2); font-size: 12px;
+               font-weight: 400; line-height: 1.55; padding: 12px 15px; border-radius: 11px;
+               white-space: normal; text-align: left; z-index: 100; transition: opacity .12s;
+               box-shadow: 0 10px 32px rgba(26,29,39,.13); }
+  .info .tip b { color: var(--text); }
+  .info:hover .tip { visibility: visible; opacity: 1; }
+  .info .tip::after { content: ""; position: absolute; bottom: 100%; left: 50%;
+                      transform: translateX(-50%); border: 7px solid transparent;
+                      border-bottom-color: var(--card); }
+  .info .tip::before { content: ""; position: absolute; bottom: 100%; left: 50%;
+                       transform: translateX(-50%); border: 8px solid transparent;
+                       border-bottom-color: var(--border2); margin-bottom: -1px; }
+  /* left-aligned variant: for controls near the left edge, anchor the tooltip
+     to the control's left instead of centering (prevents viewport clipping) */
+  .tip-left .tip { left: -12px; transform: none; }
+  .tip-left .tip::after, .tip-left .tip::before { left: 22px; }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="logo">
+    <div class="logo-mark">f2n</div>
+    <div><b>fhir→notes</b><small>local conversion</small></div>
+  </div>
+  <div class="nav-label">Pipeline</div>
+  <div class="nav-item active" data-view="dashboard" onclick="switchView('dashboard')">▦ Dashboard</div>
+  <div class="nav-item" data-view="patients" onclick="switchView('patients')">▤ Patients
+    <span class="count" id="navPatients">0</span></div>
+  <div class="nav-item" data-view="glossary" onclick="switchView('glossary')">≡ Glossary
+    <span class="count" id="navGloss">0</span></div>
+  <div class="nav-label">Diagnostics</div>
+  <div class="nav-item" data-view="log" onclick="switchView('log')">⌨ Pipeline log</div>
+  <div class="side-foot">
+    Everything runs on 127.0.0.1.<br>No data leaves this machine.<br>
+    <span id="footStatus">idle</span>
+  </div>
+</aside>
+
+<main>
+  <div class="page-title">Patient notes dashboard</div>
+  <div class="page-sub">Convert FHIR bundles into gated English patient prose. Every note
+  carries a provenance chain back to the exact source resources it was built from.</div>
+
+  <!-- controls -->
+  <div class="controls">
+    <div class="ctl" style="flex:1;min-width:300px">
+      <label>Input directory
+        <i class="info tip-left">i<span class="tip">Any directory containing FHIR JSON - bundles, single
+        resources, or arrays. Scanned recursively; new files are picked up with no code changes.
+        Non-FHIR JSON is skipped with a warning, never fatal.</span></i></label>
+      <input id="inputDir" placeholder="/path/to/fhir/examples">
+    </div>
+    <div class="ctl">
+      <label>Negated facts
+        <i class="info">i<span class="tip"><b>Omit</b> - negated facts ("no evidence of X") are left
+        out of the note prose. Safest for retrieval: embedding models read "denies X" almost the
+        same as "X" and would pull the wrong trials.<br><br><b>State</b> - negated facts appear
+        explicitly, e.g. "Notable negatives: SARS-CoV-2 RNA: not detected". Clinically faithful;
+        the marker keeps the gate happy. Either way every fact is preserved in out/facts/ for
+        eligibility reasoning.</span></i></label>
+      <div class="row"><select id="negmode">
+        <option value="omit">omit from note</option>
+        <option value="state">state explicitly</option>
+      </select></div>
+    </div>
+    <div class="ctl">
+      <label>Dosage phrasing
+        <i class="info">i<span class="tip"><b>No polish</b> - fully deterministic; the same input
+        always produces byte-identical notes.<br><br><b>LLM polish</b> - messy dosage schedules
+        (like "07:00|1|Tabl.") are rephrased into English. Every phrase is verified: all numbers
+        must exist in the source schedule, the drug name must match, and drug names are checked
+        against NLM RxNorm. Failed validation falls back to raw text.</span></i></label>
+      <div class="row"><select id="polish">
+        <option value="">deterministic</option>
+        <option value="--llm-polish">LLM polish</option>
+      </select></div>
+    </div>
+    <div class="ctl">
+      <label>&nbsp;</label>
+      <button class="btn" id="runBtn" onclick="run()" style="padding:10px 22px">Run pipeline</button>
+    </div>
+  </div>
+
+  <div class="saved-banner" id="savedBanner" style="display:none"></div>
+
+  <!-- stats -->
+  <div class="stats">
+    <div class="stat"><div class="label">Patients</div><div class="num" id="stPatients">–</div></div>
+    <div class="stat green"><div class="label">Gate passed</div><div class="num" id="stPass">–</div></div>
+    <div class="stat red"><div class="label">Gate failed</div><div class="num" id="stFail">–</div></div>
+    <div class="stat accent"><div class="label">Glossary terms</div><div class="num" id="stGloss">–</div></div>
+  </div>
+
+  <!-- dashboard view: summary -->
+  <div id="view-dashboard">
+    <div class="card" style="padding:6px 10px;margin-bottom:14px">
+      <table id="summaryTable"></table>
+    </div>
+    <pre class="log" id="logBox">no run yet</pre>
+  </div>
+
+  <!-- patients view: list + note -->
+  <div id="view-patients" class="hidden">
+    <div class="grid" id="patientList" style="margin-bottom:14px"></div>
+    <div id="noteWrap"><div class="empty card card-pad">select a patient card above</div></div>
+  </div>
+
+  <!-- glossary view -->
+  <div id="view-glossary" class="hidden">
+    <div class="card" style="padding:6px 10px">
+      <table id="glossTable"></table>
+    </div>
+  </div>
+
+  <!-- log view -->
+  <div id="view-log" class="hidden">
+    <pre class="log" id="logBox2">no run yet</pre>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let patients = [], selected = null;
+
+let wasRunning = false;
+async function refresh() {
+  const s = await (await fetch('/api/state')).json();
+  $('runBtn').disabled = s.running;
+  $('footStatus').textContent = s.running ? 'pipeline running…' : 'idle';
+  if (wasRunning && !s.running && s.patients.length) {
+    const pass = s.patients.filter(p => p.verdict === 'PASS').length;
+    const b = $('savedBanner');
+    b.style.display = 'flex';
+    b.innerHTML = `<span>✓ Saved</span>
+      <code>${s.patients.length} notes → out/notes/</code>
+      <span class="dim">${pass}/${s.patients.length} passed the gate ·
+      provenance alongside each note · facts in out/facts/</span>
+      <a href="#" onclick="downloadNote(selected || 'pat-1'); return false"
+         style="margin-left:auto">download selected</a>`;
+  }
+  wasRunning = s.running;
+  if (s.log.length) { $('logBox').textContent = s.log.join('\n'); $('logBox2').textContent = s.log.join('\n'); }
+  if (!s.running) patients = s.patients;
+  const pass = patients.filter(p => p.verdict === 'PASS').length;
+  const fail = patients.filter(p => p.verdict === 'FAIL').length;
+  $('stPatients').textContent = patients.length || '–';
+  $('stPass').textContent = patients.length ? pass : '–';
+  $('stFail').textContent = patients.length ? fail : '–';
+  $('navPatients').textContent = patients.length;
+  renderSummary();
+  renderGrid($('patientList'), false);
+  if (s.running) setTimeout(refresh, 800);
+}
+async function glossCount() {
+  const d = await (await fetch('/api/glossary')).json();
+  const terms = Object.entries(d.terms || {});
+  $('stGloss').textContent = terms.length || '–';
+  $('navGloss').textContent = terms.filter(([k,v]) => v.status === 'pending_review').length;
+  return d;
+}
+function chip(verdict) {
+  const cls = verdict === 'PASS' ? 'pass' : verdict === 'FAIL' ? 'fail' : 'pending';
+  return `<span class="chip ${cls}">${verdict === 'PASS' ? '✓ ' : verdict === 'FAIL' ? '✕ ' : '… '}${verdict}</span>`;
+}
+function renderSummary() {
+  const el = $('summaryTable');
+  if (!patients.length) { el.innerHTML = '<tr><td style="color:var(--dim)">no patients yet — run the pipeline</td></tr>'; return; }
+  const rows = patients.map(p => `
+    <tr style="cursor:pointer" onclick="openNote('${p.id}')">
+      <td><strong style="font-family:ui-monospace,monospace">${p.id}</strong></td>
+      <td>${chip(p.verdict)}</td>
+      <td>${p.resources} resources</td>
+      <td>${p.negated_facts && p.negated_facts.length ? p.negated_facts.length + ' negated (preserved)' : '—'}</td>
+      <td>${p.invented_numbers && p.invented_numbers.length
+           ? '<span class="chip fail">invented: ' + p.invented_numbers.join(', ') + '</span>' : '<span class="chip pass">numbers clean</span>'}</td>
+      <td style="color:var(--dim)">${(p.provenance.input_files||[]).length} source files</td>
+    </tr>`);
+  el.innerHTML = `<tr><th>patient</th><th>gate</th><th>bundle</th><th>negated facts</th><th>numbers</th><th>traceable to</th></tr>`
+    + rows.join('');
+}
+function renderGrid(el, compact) {
+  if (!patients.length) { el.innerHTML = '<div class="empty">no patients yet — run the pipeline</div>'; return; }
+  el.innerHTML = patients.map(p => `
+    <div class="pt-card ${selected===p.id?'active':''}" onclick="${compact?`openNote('${p.id}')`:`select('${p.id}')`}">
+      <div class="pt-head"><span class="id">${p.id}</span>${chip(p.verdict)}</div>
+      <div class="pt-meta">
+        <span class="chip">${p.resources} resources</span>
+        ${p.negated_facts && p.negated_facts.length ? `<span class="chip">${p.negated_facts.length} negated</span>` : ''}
+      </div>
+      <div class="pt-foot">
+        <span>${Object.keys(p.types||{}).length} resource types</span>
+        <span>${p.invented_numbers && p.invented_numbers.length ? '⚠ numbers' : 'numbers clean'}</span>
+      </div>
+    </div>`).join('');
+}
+function select(id) { selected = id; renderGrid($('patientList'), false); showNote(id); }
+function openNote(id) { switchView('patients'); select(id); }
+function showNote(id) {
+  const p = patients.find(x => x.id === id);
+  if (!p) return;
+  if (!p.note) { $('noteWrap').innerHTML = '<div class="empty card card-pad">no note for this patient</div>'; return; }
+  const negPanel = p.negated_facts && p.negated_facts.length
+    ? `<div class="neg-panel"><b>Preserved negated facts — omitted from note, available for eligibility reasoning</b>
+       ${p.negated_facts.map(f => `<div>▸ <strong>${f.term || '-'}</strong>${f.value != null ? ` — ${f.value} ${f.unit||''}` : ''}</div>`).join('')}</div>` : '';
+  $('noteWrap').innerHTML = `
+    <div class="note-card">
+      <div class="meta-row">${chip(p.verdict)}
+        <span class="chip">${p.resources} resources</span>
+        <span class="chip">negation: ${p.provenance.negation_mode}</span>
+        ${p.provenance.llm_polish ? '<span class="chip">LLM polished</span>' : ''}
+      </div>
+      <div class="note-text">${p.note.replace(/</g,'&lt;')}</div>
+      <div class="prov">
+        <div>bundle <code>${(p.provenance.bundle_sha256||'').slice(0,26)}…</code>
+             · <a href="/api/provenance/${p.id}" target="_blank">full provenance JSON</a>
+             · <a href="#" onclick="downloadNote('${p.id}');return false">download note</a></div>
+        <div>resources: ${(p.provenance.resource_ids||[]).length} linked, each individually hashed</div>
+        <div>source: ${(p.provenance.input_files||[]).join(', ') || 'n/a'}</div>
+      </div>
+      ${negPanel}
+    </div>`;
+}
+async function downloadNote(id) {
+  const r = await fetch('/api/download/' + id);
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = id + '_note.txt'; a.click();
+}
+async function loadGlossary() {
+  const d = await glossCount();
+  const rows = Object.entries(d.terms).map(([k,v]) => `
+    <tr><td><code>${k.split('|')[1] || '-'}</code></td>
+    <td style="color:var(--dim)">${k.split('|')[2]} ${v.is_new ? '<span class="chip pending">new</span>' : ''}</td>
+    <td><strong>${v.en || '(none)'}</strong></td>
+    <td>${v.status==='approved'?'<span class="chip pass">approved</span>'
+        : v.status==='auto'?'<span class="chip pass">auto</span>'
+        : '<span class="chip pending">pending review</span>'}</td>
+    <td>${v.status==='pending_review'
+      ? `<button class="approve-btn" onclick="approve('${k.replaceAll("'", "\\'")}')">approve</button>` : ''}</td></tr>`);
+  $('glossTable').innerHTML =
+    `<tr><th>code</th><th>source term</th><th>English</th><th>status</th><th></th></tr>` + rows.join('');
+}
+async function approve(termId) {
+  await fetch('/api/approve', {method:'POST', headers:{'Content-Type':'application/json'},
+                               body: JSON.stringify({term_id: termId})});
+  loadGlossary();
+}
+function switchView(name) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === name));
+  ['dashboard','patients','glossary','log'].forEach(v =>
+    $('view-'+v).classList.toggle('hidden', v !== name));
+  if (name === 'glossary') loadGlossary();
+}
+async function run() {
+  const body = {input: $('inputDir').value.trim(), negmode: $('negmode').value};
+  if ($('polish').value) body.polish = $('polish').value;
+  const r = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'},
+                                     body: JSON.stringify(body)});
+  if (!r.ok) { const e = await r.json(); alert(e.error); return; }
+  $('savedBanner').style.display = 'none';
+  switchView('log'); refresh();
+}
+
+/* server compat: /api/run reads "input" + optional "negmode"/"polish" */
+const _origRun = run;
+$('inputDir').value = '/Users/mehulmittal/Downloads/care-fhir-server-main/data/examples';
+refresh(); glossCount();
+setInterval(() => { if (!$('runBtn').disabled) refresh(); }, 5000);
+</script>
+</body>
+</html>
