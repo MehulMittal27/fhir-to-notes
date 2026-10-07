@@ -67,18 +67,20 @@ def _state_payload() -> dict:
             for e in bundle.get("entry", []):
                 t = e["resource"].get("resourceType")
                 types[t] = types.get(t, 0) + 1
-            negated = []
+            negated, uncertain = [], []
             fpath = OUT / "facts" / f"{pid}.facts.json"
             if fpath.exists():
                 fd = json.loads(fpath.read_text())["facts"]
                 for group in ("conditions", "observations", "procedures",
                               "medications"):
                     for f in fd.get(group, []):
-                        if f.get("negated"):
-                            negated.append({
-                                "kind": group[:-1], "term": f.get("term"),
+                        item = {"kind": group[:-1], "term": f.get("term"),
                                 "value": f.get("value"), "unit": f.get("unit"),
-                            })
+                                "why": f.get("assertion_evidence")}
+                        if f.get("assertion") == "uncertain":
+                            uncertain.append(item)
+                        elif f.get("negated"):
+                            negated.append(item)
             prov = {}
             pprov = Path(v["provenance_file"]) if v.get("provenance_file") else None
             if pprov and pprov.exists():
@@ -101,6 +103,7 @@ def _state_payload() -> dict:
                 "negation_flips": v.get("negation_flips"),
                 "dropped_facts": [d["term"] for d in v.get("dropped_facts", [])],
                 "negated_facts": negated,
+                "uncertain_facts": uncertain,
                 "note": note,
             })
     return {

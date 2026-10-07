@@ -50,16 +50,34 @@ Each stage is one script in `src/`, numbered. Rules:
 | `loinc.org`, `snomed` (`sct`) | native | English display copied as-is |
 | anything else (hospital-internal, OPS) | 2 | LLM proposal + grounding validator + human review |
 
+The ICD lookup hits US ICD-10-CM, not GM: only an exact code match may be
+`auto`; nearest/prefix matches and GM-only codes are `pending_review`.
+
 Routing lives in `src/tiers.py` as data, not inline conditionals, so adding a
 new system is a one-line change.
 
 ## The faithfulness gate (stage 4) is law
 
 Negation flips, invented facts, and invented numbers are fatal violations.
+Only structured FHIR negation (Condition.verificationStatus refuted) makes a
+fact negated; a text cue alone makes it uncertain, never absent.
 A note with any fatal violation does not ship, regardless of how good it reads.
 Dropped facts are counted per note in `out/gate_report.json`.
+
+## Tests
+
+`python3 -m unittest discover -s tests`. Synthetic fixtures only (made-up
+codes and records); mock NLM and the LLM - no network, never read `out/` or
+`config/glossary*.json`.
 
 ## Decision log
 
 Material decisions are appended to `docs/decisions.md` with date and rationale.
 Do not rewrite past entries.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

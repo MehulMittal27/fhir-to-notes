@@ -88,7 +88,7 @@
 
   .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
           padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
-          color: var(--dim); background: var(--card); }
+          color: var(--dim); background: var(--card); white-space: nowrap; }
   .chip.pass { color: var(--green); background: var(--green-soft); border-color: transparent; }
   .chip.fail { color: var(--red); background: var(--red-soft); border-color: transparent; }
   .chip.pending { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
@@ -117,6 +117,7 @@
                border-radius: 10px; padding: 13px 17px; font-size: 13px; }
   .neg-panel b { color: var(--amber); font-size: 11px; letter-spacing: .07em;
                  text-transform: uppercase; display: block; margin-bottom: 6px; }
+  .why { color: var(--dim); font-size: 11.5px; line-height: 1.5; }
   a { color: var(--accent); text-decoration: none; }
 
   /* glossary table */
@@ -332,6 +333,7 @@ function renderGrid(el, compact) {
       <div class="pt-meta">
         <span class="chip">${p.resources} resources</span>
         ${p.negated_facts && p.negated_facts.length ? `<span class="chip">${p.negated_facts.length} negated</span>` : ''}
+        ${p.uncertain_facts && p.uncertain_facts.length ? `<span class="chip pending">${p.uncertain_facts.length} uncertain</span>` : ''}
       </div>
       <div class="pt-foot">
         <span>${Object.keys(p.types||{}).length} resource types</span>
@@ -348,6 +350,9 @@ function showNote(id) {
   const negPanel = p.negated_facts && p.negated_facts.length
     ? `<div class="neg-panel"><b>Preserved negated facts — omitted from note, available for eligibility reasoning</b>
        ${p.negated_facts.map(f => `<div>▸ <strong>${f.term || '-'}</strong>${f.value != null ? ` — ${f.value} ${f.unit||''}` : ''}</div>`).join('')}</div>` : '';
+  const uncertainPanel = p.uncertain_facts && p.uncertain_facts.length
+    ? `<div class="neg-panel"><b>Uncertain facts - negation wording only, shown in the note as uncertain status</b>
+       ${p.uncertain_facts.map(f => `<div>▸ <strong>${f.term || '-'}</strong>${f.why ? ` <span class="why">${f.why}</span>` : ''}</div>`).join('')}</div>` : '';
   $('noteWrap').innerHTML = `
     <div class="note-card">
       <div class="meta-row">${chip(p.verdict)}
@@ -364,6 +369,7 @@ function showNote(id) {
         <div>source: ${(p.provenance.input_files||[]).join(', ') || 'n/a'}</div>
       </div>
       ${negPanel}
+      ${uncertainPanel}
     </div>`;
 }
 async function downloadNote(id) {
@@ -377,7 +383,7 @@ async function loadGlossary() {
   const rows = Object.entries(d.terms).map(([k,v]) => `
     <tr><td><code>${k.split('|')[1] || '-'}</code></td>
     <td style="color:var(--dim)">${k.split('|')[2]} ${v.is_new ? '<span class="chip pending">new</span>' : ''}</td>
-    <td><strong>${v.en || '(none)'}</strong></td>
+    <td><strong>${v.en || '(none)'}</strong>${v.review_reason ? `<div class="why">${v.review_reason}</div>` : ''}</td>
     <td>${v.status==='approved'?'<span class="chip pass">approved</span>'
         : v.status==='auto'?'<span class="chip pass">auto</span>'
         : '<span class="chip pending">pending review</span>'}</td>

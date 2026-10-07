@@ -54,7 +54,7 @@ flowchart TD
     IN["FHIR bundles on disk"] --> S1["1 · Inventory Scan<br/>unique concepts + tiers"]
     S1 --> S2["2 · Glossary<br/>lookup-first · NLM APIs · RxNorm verify<br/>LLM proposals → human review"]
     S1 --> S3["3 · FHIR Split<br/>self-contained bundle per patient<br/>+ per-resource hashes"]
-    S2 --> S4["4 · Guarded Conversion<br/>negation rule engine · template render<br/>faithfulness gate"]
+    S2 --> S4["4 · Guarded Conversion<br/>assertion rules · template render<br/>faithfulness gate"]
     S3 --> S4
     S4 --> N["notes/<id>.txt + provenance + facts sidecar"]
     S4 -->|gate fail| R["rejected/ — never ships"]
@@ -77,7 +77,7 @@ flowchart TD
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
 | `--input DIR` | run, stage1, stage3 | Any directory of FHIR JSON (bundles, single resources, arrays); recursive |
-| `--negation-mode omit\|state` | run, stage4 | `omit`: negated facts left out of prose (retrieval-safe). `state`: rendered as "Notable negatives: X: not detected". Facts preserved in `out/facts/` either way |
+| `--negation-mode omit\|state` | run, stage4 | `omit`: negated facts left out of prose (retrieval-safe). `state`: rendered as "Notable negatives: X: not detected". Only structurally negated facts; cue-only facts always render as "uncertain status". Facts preserved in `out/facts/` either way |
 | `--llm-polish` | run, stage4 | Rephrase dosage schedules via LLM; every phrase verified against source numbers + NLM RxNorm before shipping |
 | `--glossary FILE` | stage4 | Which glossary to consume (default: the Stage-4 working copy) |
 | `--out DIR` | all | Output root (default `out/`) |
@@ -120,6 +120,16 @@ corpus falls into one of five categories, each handled differently:
    code only, cached forever in `out/term_lookup_cache.json`) → demoted to LLM
    review if both miss. The German display string is never translated - it is
    decoration; the code is the identity.
+   NLM serves the US **ICD-10-CM** table, not German ICD-10-GM, so only an
+   **exact** code match ships `auto`. When the GM code is absent from CM, NLM may
+   return more specific CM codes that start with it (GM `C64`, no side → CM
+   `C64.1`, right kidney); such a nearest match is only a proposal: it lands as
+   `pending_review` with `match: "prefix"`, the proposed `matched_code`, all
+   `cm_candidates`, and a `review_reason` in `config/glossary.json` (also shown
+   in the UI glossary tab). A GM-only code with no CM hit gets an LLM proposal,
+   also `pending_review` with a `review_reason`. Older glossaries holding a
+   nearest match as `auto` are re-routed to review on the next stage-2 run;
+   human-`approved` entries are kept.
 2. **Already-English concepts → copied verbatim.** LOINC and SNOMED displays
    carry their official English names inside the data itself ("Body temperature",
    "Oral route", "SARS-CoV-2 RNA..."). Zero risk, zero effort, `status: auto`.
@@ -151,12 +161,23 @@ the structured path needs no prose at all and loses nothing.
 ### Stage 4 - Guarded Conversion
 *What:* per patient, extract facts deterministically from the bundle (demographics,
 conditions, observations, procedures, medications - including two-hop joins like
-MedicationAdministration → Medication definition), apply the negation rule engine,
-render through a fixed template, and pass the faithfulness gate.
+MedicationAdministration → Medication definition), classify each condition and
+observation as present, negated, or uncertain, render through a fixed template,
+and pass the faithfulness gate.
 *Division of labor:* code owns truth. The LLM's contribution lives frozen in the
 glossary; it never writes prose that reaches a record directly.
-*Negation handling:* negated facts never appear in prose as positive mentions
-(fatal gate violation). Two modes, chosen per run:
+*Assertion states:* a fact is **negated** only on structured FHIR negation:
+`Condition.verificationStatus = refuted` (R4 CodeableConcept or STU3 code). A
+negation cue in the text alone ("no ", "without ", "keine ", "negativ", ...)
+makes the fact **uncertain**, not negated, because cues also occur inside
+positive concept names (a "...-negativ" receptor-status diagnosis). Uncertain
+facts are rendered in both modes, only inside one qualified sentence:
+"Findings of uncertain status: X." Other FHIR statuses (entered-in-error,
+resolved, MedicationStatement not-taken, Observation interpretation codes) are
+not yet read.
+*Negation handling:* negated and uncertain facts never appear in prose as
+positive mentions, and an uncertain fact is never stated as "not detected"
+(all fatal gate violations). Two modes for negated facts, chosen per run:
 - `omit` - negated facts left out of the note (dense retrievers ignore negation,
   so mentioning them risks pulling wrong trials)
 - `state` - rendered explicitly as "Notable negatives: X: not detected" -
@@ -179,7 +200,8 @@ A local single-page dashboard (127.0.0.1 only):
 - **Download note (.txt)** per patient
 - **Provenance panel** per note: bundle sha256, linked resource IDs, source files,
   glossary hash, negation mode - plus a link to the full JSON record
-- **Preserved-negatives panel** showing exactly which facts were omitted and why
+- **Preserved-negatives panel** showing exactly which facts were omitted and why,
+  plus an **uncertain-facts panel** naming the cue behind each uncertain fact
 - **Glossary tab** showing the union of both glossary files - brand-new terms
   from fresh data appear with a "new" badge and a one-click approve that copies
   them into the Stage-4 working copy (the authoritative review file is untouched)
@@ -221,7 +243,8 @@ Outputs land in `out/`:
 - `patients/<id>.fhir.json` + `split_manifest.json` - self-contained bundles
 - `notes/<id>.txt` + `<id>.provenance.json` - gated notes + ancestry records
 - `facts/<id>.facts.json` - full structured facts incl. negated (for eligibility reasoning)
-- `gate_report.json` - per-patient verdicts, invented numbers, dropped facts
+- `gate_report.json` - per-patient verdicts, invented numbers, dropped and
+  uncertain facts
 - caches: `term_lookup_cache.json`, `llm_polish_cache.json`, `glossary_llm_cache.json`
 
 The working glossary you review lives in `config/glossary.json`.
@@ -247,9 +270,19 @@ are skipped with a warning, never fatal - new data drops in without code changes
 2. Determinism at every LLM touchpoint: temperature 0, fixed seed, cached outputs,
    prompt version recorded next to results.
 3. Every generated artifact records its inputs' hashes (provenance or it didn't happen).
-4. Negation polarity is decided by rule engines over evidence strings, never by
-   LLM judgment alone.
+4. Negation polarity is decided by rules, never by LLM judgment alone: structured
+   FHIR negation marks a fact negated; a text cue alone only marks it uncertain.
 5. Old artifacts are never overwritten silently: outputs are dated/hashed.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Stdlib `unittest` with small synthetic fixtures (made-up codes and records).
+The NLM lookup and the LLM are mocked, so tests never touch the network or
+anything in `out/` or `config/`.
 
 See `AGENTS.md` for agent-facing conventions and `docs/decisions.md` for the
 decision log.

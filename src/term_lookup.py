@@ -9,6 +9,12 @@ Successful resolutions are cached permanently in out/term_lookup_cache.json;
 a query is fetched at most once ever. Failures are NOT cached, so a transient
 outage never becomes a permanently unresolvable term. On failure, resolution
 returns None and callers fall back to lower tiers - never fatal.
+
+ICD lookups query the US ICD-10-CM table while the corpus is coded in German
+ICD-10-GM. Only an exact code match is the same concept. Any other hit is a
+nearby CM code whose meaning can differ (laterality, site, subtype), so it is
+returned with match="prefix" and a review_reason; callers must route it to
+human review, never auto.
 """
 
 from __future__ import annotations
@@ -30,7 +36,8 @@ def resolve(system: str, code: str, cache_path: Path, timeout: int = 15) -> dict
         cache = json.loads(cache_path.read_text())
     key = f"{system}|{code}"
     if key in cache:
-        return cache[key]
+        hit = cache[key]
+        return _classify_icd(code, hit) if _system_key(system) == "icd-10-gm" else hit
 
     kind = _system_key(system)
     if kind == "atc":
@@ -94,13 +101,32 @@ def _resolve_icd(code: str, timeout: int) -> dict | None:
     rows = (data[3] if len(data) > 3 else []) or []
     exact = [r for r in rows if r[0].upper() == code.upper()]
     if exact:
-        return {"en": exact[0][1], "matched_code": exact[0][0],
-                "source": "NLM Clinical Tables (ICD-10-CM)"}
+        return _classify_icd(code, {"en": exact[0][1], "matched_code": exact[0][0],
+                                    "source": "NLM Clinical Tables (ICD-10-CM)"})
     prefix = [r for r in rows if r[0].upper().startswith(code.upper())]
     if prefix:
-        return {"en": prefix[0][1], "matched_code": prefix[0][0],
-                "source": f"NLM Clinical Tables (ICD-10-CM {prefix[0][0]}, nearest match for {code})"}
+        return _classify_icd(code, {
+            "en": prefix[0][1], "matched_code": prefix[0][0],
+            "cm_candidates": sorted(r[0] for r in prefix),
+            "source": f"NLM Clinical Tables (ICD-10-CM {prefix[0][0]}, nearest match for {code})"})
     return None
+
+
+def _classify_icd(code: str, result: dict) -> dict:
+    """Stamp match kind and review reason onto an ICD result.
+
+    Also applied to cache hits, so entries cached before match classification
+    existed (prefix hits stored without a marker) are classified the same way.
+    """
+    matched = result.get("matched_code") or ""
+    if matched.upper() == code.upper():
+        return {**result, "match": "exact"}
+    candidates = result.get("cm_candidates") or [matched]
+    return {**result, "match": "prefix", "cm_candidates": candidates,
+            "review_reason": (
+                f"ICD-10-GM {code} has no exact ICD-10-CM entry; proposed CM "
+                f"{matched} is a more specific code whose meaning may differ "
+                f"(CM candidates: {', '.join(candidates)}) - needs human review")}
 
 
 def _get_json(url: str, timeout: int, accept: str = "application/json"):
