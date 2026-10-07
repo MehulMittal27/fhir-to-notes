@@ -94,3 +94,35 @@ failure - the note lands in out/rejected/ until the term is approved through the
 UI glossary (which can approve brand-new terms into the Stage-4 working copy).
 Rationale: a note that looks complete but silently omits a diagnosis is worse
 than a rejected note; silent data loss is forbidden by AGENTS.md.
+
+## 2026-10-07 - ICD-10-CM nearest matches go to review, not auto
+The NLM ICD lookup queries the US ICD-10-CM table while the corpus is coded in
+German ICD-10-GM. On a miss, the lookup took the first CM code starting with the
+GM code and stage 2 shipped it as auto. On 13 demo GM codes this silently
+changed the meaning of 4 (C79.3 brain and meninges -> C79.31 brain only;
+C64 no side -> C64.1 right kidney; Z11 -> Z11.0 intestinal screening;
+I51.8 -> I51.81 Takotsubo syndrome). Now only an exact CM code match ships
+auto. A prefix (nearest) match enters the glossary as pending_review with the
+proposed matched_code, all cm_candidates, and a review_reason; a GM-only code
+with no CM hit goes to the LLM proposal path, also pending_review with a
+review_reason. Previously auto nearest matches in an existing glossary are not
+carried forward; human-approved entries are. This partly supersedes the
+2026-08-24 statement that NLM ICD-10-CM resolutions are authoritative: they are
+authoritative only for exact code matches. No new network endpoint.
+
+## 2026-10-07 - Text negation cues mean uncertain; refuted means negated
+The 2026-08-24 cue-list rule marked a fact negated whenever its evidence text
+contained a cue ("no ", "without ", "negativ", "keine ", ...). Cues also occur
+inside positive concept names (a "...-negativ" receptor-status diagnosis), so a
+present finding became absent, and in --negation-mode state was stated as "not
+detected". Structured FHIR negation was never read. Now each condition and
+observation carries an assertion: negated only when Condition.verificationStatus
+is refuted (R4 CodeableConcept or STU3 code); uncertain when only a text cue
+matches; present otherwise. Uncertain facts render in both modes inside one
+qualified sentence ("Findings of uncertain status: X.") so they are neither
+asserted present nor stated absent. The gate fails a note that names an
+uncertain fact outside that sentence or lists it among the negatives. The
+boolean `negated` field is kept in the facts sidecar for existing consumers.
+Deliberately not widened (follow-ups): verificationStatus entered-in-error,
+clinicalStatus resolved/inactive, MedicationStatement not-taken,
+MedicationAdministration not-done, Observation interpretation codes (NEG/ND).

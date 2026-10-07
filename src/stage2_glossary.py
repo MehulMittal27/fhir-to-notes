@@ -4,7 +4,10 @@ Resolve every unique concept from inventory.json to an English term.
 
 Tiers:
   english_native -> display copied as-is (status: auto)
-  code_lookup    -> local reference table config/icd10_atc_en.json (status: auto)
+  code_lookup    -> local reference table config/icd10_atc_en.json (status: auto);
+                    then NLM ICD-10-CM: exact match auto, nearest (prefix) match
+                    pending_review with the proposed CM code and review_reason;
+                    no match -> LLM proposal, pending_review
   llm_review     -> Codex CLI proposal, grounded, status: pending_review
 
 Outputs:
@@ -30,6 +33,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from term_lookup import resolve as resolve_external, verify_drug_name  # noqa: E402
 
 CODEX_MODEL = "gpt-5.6-luna"
+
+REVIEW_FIELDS = ("matched_code", "match", "cm_candidates", "review_reason")
+ICD_UNRESOLVED_REASON = ("no exact ICD-10-CM entry for this ICD-10-GM code "
+                         "(German-only code, or lookup unavailable) - needs human review")
 
 LLM_SYSTEM_RULES = """You are a medical terminology translator. For each entry,
 produce the standard English medical term for the German display string.
@@ -76,6 +83,16 @@ def extract_json_array(text: str) -> list | None:
         return None
 
 
+def is_unreviewed_prefix_match(entry: dict) -> bool:
+    """An auto entry produced by ICD-10-CM prefix fallback before such matches
+    were routed to review. Recognised by the match marker or, for glossaries
+    written before the marker existed, by the 'nearest match for' source text."""
+    if entry.get("status") != "auto":
+        return False
+    return entry.get("match") == "prefix" or \
+        "nearest match for" in (entry.get("source") or "")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--inventory", default="out/inventory.json")
@@ -104,6 +121,7 @@ def main() -> None:
     glossary: list[dict] = []
     needs_llm: list[dict] = []
     carried = 0
+    rerouted = 0
     for c in inventory["concepts"]:
         cid = f"{c['system']}|{c['code']}|{c['display']}"
         entry = {
@@ -113,11 +131,14 @@ def main() -> None:
             "en": None, "source": None,
         }
         prior_entry = prior.get(cid)
-        if prior_entry and prior_entry.get("en") and \
+        if prior_entry and is_unreviewed_prefix_match(prior_entry):
+            rerouted += 1
+        elif prior_entry and prior_entry.get("en") and \
                 prior_entry.get("status") in ("auto", "approved"):
             entry.update(en=prior_entry["en"], source=prior_entry.get("source"),
                          status=prior_entry["status"],
                          resolution=prior_entry.get("resolution", "carried_forward"))
+            entry.update({k: prior_entry[k] for k in REVIEW_FIELDS if k in prior_entry})
             glossary.append(entry)
             carried += 1
             continue
@@ -134,18 +155,20 @@ def main() -> None:
                 ext = resolve_external(c["system"], c["code"],
                                        cache_path=out_dir / "term_lookup_cache.json")
                 if ext:
-                    # Wikidata ATC labels are community-maintained and demonstrably
-                    # imperfect (e.g. N03AX14 -> "(S)-etiracetam"), so they are
-                    # proposals requiring approval, unlike authoritative NLM ICD.
-                    needs_approval = "wikidata" in ext["source"].lower()
+                    # Only an exact ICD-10-CM code match is the same concept as
+                    # the ICD-10-GM code. A prefix (nearest) match is a different,
+                    # more specific CM code, so it is a proposal for review.
+                    needs_approval = ext.get("match") != "exact"
                     entry.update(en=ext["en"], source=ext["source"],
-                                 matched_code=ext.get("matched_code"),
                                  status="pending_review" if needs_approval else "auto",
                                  resolution="nlm_api")
+                    entry.update({k: ext[k] for k in REVIEW_FIELDS if k in ext})
                 else:
                     entry.update(
                         tier="llm_review",
                         source="no local or external resolution - demoted to LLM review")
+                    if "icd-10" in (c["system"] or "").lower():
+                        entry["review_reason"] = ICD_UNRESOLVED_REASON
         if entry["en"] is None:
             needs_llm.append(entry)
         glossary.append(entry)
@@ -195,7 +218,8 @@ def main() -> None:
         "_comment": "Human review: flip status pending_review -> approved. "
                     "Only approved/auto entries are consumed by stage 4.",
         "provenance": proposals_doc["provenance"],
-        "terms": {e["id"]: {k: e[k] for k in ("en", "status", "source")}
+        "terms": {e["id"]: {k: e[k] for k in ("en", "status", "source", *REVIEW_FIELDS)
+                            if k in e}
                   for e in sorted(glossary, key=lambda x: x["id"])},
     }
     (cfg_dir / "glossary.json").write_text(
@@ -205,6 +229,9 @@ def main() -> None:
     print(f"Glossary written: {len(glossary)} terms "
           f"({n_auto} auto, {len(glossary) - n_auto} pending your review; "
           f"{carried} carried forward from lookup - zero API/LLM calls for those)")
+    if rerouted:
+        print(f"Re-routed {rerouted} previously auto ICD-10-CM nearest-match terms "
+              f"to pending_review (exact CM match required for auto)")
     print(f"Review file: {cfg_dir / 'glossary.json'}")
 
 

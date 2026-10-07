@@ -3,12 +3,19 @@
 Per patient:
   1. Deterministic fact extraction from the bundle (demographics, conditions,
      observations, procedures, medications). Terms resolve through the glossary.
-  2. Negation rule engine: any evidence string containing a negation cue marks
-     the fact negated; negated facts are omitted from the note and logged.
+  2. Assertion rules: each condition/observation is present, negated, or
+     uncertain. Only structured FHIR negation (Condition.verificationStatus
+     refuted) makes a fact negated. A negation cue in evidence text alone makes
+     it uncertain: cues also occur inside positive concept names
+     ("...-negativ" receptor status), so a cue never proves absence.
+     Negated facts are omitted (or stated as negatives); uncertain facts are
+     rendered only inside an explicit "uncertain status" sentence.
   3. Deterministic template rendering into TREC-style prose. No LLM writes prose.
   4. Faithfulness gate:
        - every number in the note must exist in the extracted facts
        - every glossary term used must be an approved/auto glossary entry
+       - negated or uncertain facts never appear as positive mentions, and an
+         uncertain fact is never stated as absent
        - dropped (negated) facts are counted in the report
 A failing gate blocks the note (written to out/rejected/, never out/notes/).
 
@@ -86,9 +93,45 @@ def _sys_short(system: str) -> str | None:
     return None
 
 
-def is_negated(text: str) -> bool:
+UNCERTAIN_LEAD = "Findings of uncertain status: "
+NEGATIVES_LEAD = "Notable negatives: "
+
+
+def negation_cue(text: str) -> str | None:
     t = (text or "").lower()
-    return any(cue in t for cue in NEG_CUES)
+    return next((cue for cue in NEG_CUES if cue in t), None)
+
+
+def _codes(concept) -> list[str]:
+    if isinstance(concept, str):
+        return [concept]
+    if isinstance(concept, dict):
+        return [c.get("code", "") for c in concept.get("coding", [])
+                if isinstance(c, dict)]
+    return []
+
+
+def assertion_of(resource: dict, evidence: str) -> tuple[str, str | None]:
+    """Return (assertion, why): present, negated, or uncertain.
+
+    verificationStatus is a CodeableConcept in R4 and a plain code in STU3.
+    """
+    if resource.get("resourceType") == "Condition" and \
+            "refuted" in _codes(resource.get("verificationStatus")):
+        return "negated", "Condition.verificationStatus = refuted"
+    cue = negation_cue(evidence)
+    if cue is not None:
+        return "uncertain", f"negation cue {cue.strip()!r} in text only - not structured negation"
+    return "present", None
+
+
+def _fact(term: str, assertion: tuple[str, str | None], **extra) -> dict:
+    status, why = assertion
+    fact = {"term": term, **extra, "assertion": status,
+            "negated": status == "negated"}
+    if why:
+        fact["assertion_evidence"] = why
+    return fact
 
 
 POLISH_RULES = """You are converting a medication dosage schedule into one short
@@ -169,7 +212,7 @@ def collect_facts(bundle: dict, lookup: dict) -> dict:
             if term is None:
                 facts["unresolved_terms"].append(r.get("id"))
             else:
-                facts["conditions"].append({"term": term, "negated": is_negated(text)})
+                facts["conditions"].append(_fact(term, assertion_of(r, text)))
         elif rtype == "Observation":
             term = term_for(r, lookup)
             if term is None:
@@ -179,11 +222,8 @@ def collect_facts(bundle: dict, lookup: dict) -> dict:
             val = value.get("value")
             unit = value.get("unit") or value.get("code")
             interp = json.dumps(r.get("interpretation", ""), ensure_ascii=False)
-            negated = is_negated(interp) or is_negated(term or "")
-            facts["observations"].append({
-                "term": term, "value": val, "unit": unit,
-                "negated": negated,
-            })
+            facts["observations"].append(_fact(
+                term, assertion_of(r, interp + " " + term), value=val, unit=unit))
         elif rtype == "Procedure":
             term = term_for(r, lookup)
             if term is None:
@@ -208,27 +248,36 @@ def collect_facts(bundle: dict, lookup: dict) -> dict:
             facts["medications"].append({
                 "term": term,
                 "prior": status in ("completed", "stopped"),
-                "negated": is_negated(status),
                 "schedule": schedule,
             })
     return facts
 
 
+def _facts_with(facts: dict, assertion: str) -> list[dict]:
+    return [f for group in ("conditions", "observations")
+            for f in facts[group] if f.get("assertion", "present") == assertion]
+
+
 def render(facts: dict, polished: dict[str, str] | None = None,
-           negation_mode: str = "omit") -> tuple[str, list[str]]:
+           negation_mode: str = "omit") -> tuple[str, dict[str, str]]:
+    """Render the note. Returns (note, sanctioned) where sanctioned maps
+    "negatives"/"uncertain" to the only sentences allowed to name such facts."""
     polished = polished or {}
-    sanctioned: list[str] = []
+    sanctioned: dict[str, str] = {}
     parts = []
     d = facts["demographics"]
     if d.get("age") and d.get("sex"):
         parts.append(f"Patient is a {d['age']}-year-old {d['sex']}")
-    conds = [c["term"] for c in facts["conditions"] if not c["negated"]]
-    if conds:
+    conds = [c["term"] for c in facts["conditions"]
+             if c.get("assertion", "present") == "present"]
+    if conds and parts:
         parts[-1] += " with a history of " + ", ".join(conds) + "."
+    elif conds:
+        parts.append("History of " + ", ".join(conds) + ".")
     elif parts:
         parts[-1] += "."
     obs = [(o["term"], o["value"], o["unit"]) for o in facts["observations"]
-           if not o["negated"]]
+           if o.get("assertion", "present") == "present"]
     if obs:
         rendered = []
         for term, val, unit in obs:
@@ -245,19 +294,23 @@ def render(facts: dict, polished: dict[str, str] | None = None,
     procs = [p["term"] for p in facts["procedures"]]
     if procs:
         parts.append("Procedures included " + ", ".join(procs) + ".")
-    negs = [f for group in ("conditions", "observations")
-            for f in facts[group] if f["negated"]]
+    uncertain = _facts_with(facts, "uncertain")
+    if uncertain:
+        phrase = "; ".join(f"{u['term']} ({u['value']} {u['unit']})"
+                           if u.get("value") is not None else u["term"]
+                           for u in uncertain)
+        sanctioned["uncertain"] = f"{UNCERTAIN_LEAD}{phrase}."
+        parts.append(sanctioned["uncertain"])
+    negs = _facts_with(facts, "negated")
     if negs and negation_mode == "state":
         phrase = "; ".join(f"{n['term']}: not detected" for n in negs)
-        sentence = f"Notable negatives: {phrase}."
-        parts.append(sentence)
-        sanctioned.append(sentence)
+        sanctioned["negatives"] = f"{NEGATIVES_LEAD}{phrase}."
+        parts.append(sanctioned["negatives"])
     return " ".join(parts), sanctioned
 
 
-def gate(note: str, facts: dict, sanctioned: list[str] | None = None) -> dict:
-    sanctioned = sanctioned or []
-    sanctioned_text = " ".join(sanctioned)
+def gate(note: str, facts: dict, sanctioned: dict[str, str] | None = None) -> dict:
+    sanctioned = sanctioned or {}
     note_numbers = set(re.findall(r"\d+(?:\.\d+)?", note))
     fact_numbers = set()
 
@@ -285,21 +338,30 @@ def gate(note: str, facts: dict, sanctioned: list[str] | None = None) -> dict:
                 add_number_strings(f["schedule"])
     add_number_strings(str(facts["demographics"].get("sex", "")))
     invented_numbers = sorted(n for n in note_numbers if n not in fact_numbers)
-    negated_used = [f["term"] for group in ("conditions", "observations")
-                    for f in facts[group]
-                    if f["negated"] and f["term"] in note
-                    and not (sanctioned_text and f["term"] in sanctioned_text
-                             and any(s in note for s in sanctioned))]
-    dropped = [{"term": f["term"], "reason": "negated"}
-               for group in ("conditions", "observations")
-               for f in facts[group] if f["negated"]]
+    # Text outside the sanctioned sentences is where facts are asserted present.
+    asserted = note
+    for sentence in sanctioned.values():
+        asserted = asserted.replace(sentence, "")
+    negated = _facts_with(facts, "negated")
+    uncertain = _facts_with(facts, "uncertain")
+    negated_used = [f["term"] for f in negated if f["term"] in asserted]
+    uncertain_asserted = [f["term"] for f in uncertain if f["term"] in asserted]
+    negatives_text = sanctioned.get("negatives", "")
+    uncertain_stated_absent = [f["term"] for f in uncertain
+                               if negatives_text and f["term"] in negatives_text]
+    dropped = [{"term": f["term"], "reason": "negated"} for f in negated]
     unresolved = facts.get("unresolved_terms", [])
     return {
         "invented_numbers": invented_numbers,
         "negation_flips": negated_used,
+        "uncertain_asserted": uncertain_asserted,
+        "uncertain_stated_absent": uncertain_stated_absent,
+        "uncertain_facts": [{"term": f["term"], "reason": f.get("assertion_evidence")}
+                            for f in uncertain],
         "dropped_facts": dropped,
         "unresolved_terms": unresolved,
-        "hard_fail": bool(invented_numbers or negated_used or unresolved),
+        "hard_fail": bool(invented_numbers or negated_used or uncertain_asserted
+                          or uncertain_stated_absent or unresolved),
     }
 
 
@@ -313,7 +375,9 @@ def main() -> None:
                          "(validated against source numbers; off by default)")
     ap.add_argument("--negation-mode", choices=["omit", "state"], default="omit",
                     help="omit: negated facts left out of prose (retrieval-safe). "
-                         "state: rendered explicitly as '<term>: not detected'")
+                         "state: rendered explicitly as '<term>: not detected'. "
+                         "Only structurally negated facts; cue-only facts are "
+                         "always rendered as 'uncertain status'")
     args = ap.parse_args()
 
     patients_dir = Path(args.patients_dir)
@@ -347,7 +411,7 @@ def main() -> None:
         if args.llm_polish:
             for i, m in enumerate(facts["medications"]):
                 sched = m.get("schedule", "")
-                if not sched or m["negated"]:
+                if not sched:
                     continue
                 phrase = llm_polish_schedule(pid, f"med-{i}", m["term"], sched,
                                              polish_cache)
